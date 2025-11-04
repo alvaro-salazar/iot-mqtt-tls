@@ -60,10 +60,10 @@
 
 // Variables de configuración de la red WiFi
 #ifndef WIFI_SSID
-#define WIFI_SSID "Realme 6"                       ///< SSID por defecto vacío; usar aprovisionamiento
+#define WIFI_SSID "MAXELL_2.4_F2F"                       ///< SSID por defecto vacío; usar aprovisionamiento
 #endif
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "pbernal309"                   ///< Password por defecto vacío; usar aprovisionamiento
+#define WIFI_PASSWORD "a1b2c3d4"                   ///< Password por defecto vacío; usar aprovisionamiento
 #endif
 
 // Alias para compatibilidad con el código existente
