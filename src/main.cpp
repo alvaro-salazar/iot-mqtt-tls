@@ -89,7 +89,7 @@ void setup() {
   // Mostrar version al finalizar inicializacion (reutilizar variable ya declarada arriba)
   Serial.println();
   Serial.println("========================================");
-  Serial.print("Sistema inicializado - Firmware ");
+  Serial.print("Sistema inicializado - Firmware>> ");
   Serial.println(firmwareVersion);
   Serial.println("========================================");
   Serial.println();
