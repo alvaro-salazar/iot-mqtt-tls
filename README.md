@@ -94,23 +94,32 @@ Resultado actual: **100 % líneas, 100 % funciones**.
 
 ## CI/CD Pipeline
 
-Un solo workflow (`.github/workflows/ci.yml`) con tres jobs en secuencia:
+Un solo workflow (`.github/workflows/ci.yml`) con tres jobs. Cada job tiene su propia regla de disparo:
 
 ```
-Unit Tests & Coverage → Hardware Integration Tests → Build Firmware & OTA Deploy
-         (siempre)          (solo PRs a main)           (solo main y tags)
+unit-tests ──────────────────────────────────────────────────► siempre (en main, develop, PRs a main, tags)
+    │
+    └──► hardware-tests ──────────────────────────────────────► solo en PRs a main (best-effort)
+    │
+    └──► build-and-publish ──────────────────────────────────► solo si unit-tests pasó + (main o tag)
 ```
 
-| Evento | Unit Tests | Hardware Tests | OTA Deploy |
+### ¿Cuándo se dispara cada job?
+
+| Evento | `unit-tests` | `hardware-tests` | `build-and-publish` (OTA) |
 |---|---|---|---|
-| Push a `feature/**` | via PR trigger | — | — |
-| PR a `main` | ✓ | ✓ best-effort | — |
-| Push a `main` | ✓ | — | ✓ si tests pasan |
-| Tag `v*.*.*` | ✓ | — | ✓ si tests pasan |
+| Push a rama `feature/**` | — no corre | — no corre | — no corre |
+| Push a `develop` | ✓ corre | — omitido | — omitido (no es main) |
+| PR a `main` | ✓ corre | ✓ best-effort con runner self-hosted | — omitido (es PR, no push) |
+| Push a `main` (merge) | ✓ corre | — omitido | ✓ si unit-tests pasó |
+| Tag `v*.*.*` | ✓ corre | — omitido | ✓ si unit-tests pasó |
 
-**El OTA deploy nunca se ejecuta sin que los unit tests hayan pasado.**
+**Reglas clave:**
 
-Los hardware tests usan `continue-on-error: true` + `timeout-minutes: 10` — si el runner no está disponible, el pipeline continúa sin bloquearse.
+- `unit-tests` es el único quality gate obligatorio. Si falla, nada más corre.
+- `hardware-tests` corre solo en PRs a `main` porque requiere un runner self-hosted con ESP32. Si el runner no está disponible, `continue-on-error: true` evita que bloquee el merge.
+- `build-and-publish` usa `always()` en su condición `if` para que GitHub Actions evalúe la condición incluso cuando `hardware-tests` está en estado `skipped` (comportamiento por defecto de GitHub: un job con `needs` skipped se omite a menos que use `always()`).
+- El OTA deploy **nunca corre sin que los unit tests hayan pasado**.
 
 ### Configurar GitHub Secrets
 
