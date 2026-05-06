@@ -1,126 +1,205 @@
 # IoT MQTT TLS (ESP32)
 
-Proyecto base para ESP32 con MQTT seguro (TLS), provisión Wi‑Fi por portal AP, y actualizaciones OTA vía GitHub Actions.
+Proyecto base para ESP32 con MQTT seguro (TLS), provisión Wi‑Fi por portal AP, actualizaciones OTA vía GitHub Actions e infraestructura completa de testing con PlatformIO y Unity.
 
-## 🚀 Quick Start
+![CI](https://github.com/alvaro-salazar/iot-mqtt-tls/actions/workflows/ci.yml/badge.svg)
 
-### Requisitos
-- **PlatformIO**: extensión de VS Code o CLI (`pip install platformio`)
-- **Python 3.7+**
-- **ESP32** conectado por USB
+## Requisitos
 
-### Configuración inicial
+- **PlatformIO** CLI o extensión de VS Code
+- **Python 3.11+**
+- **ESP32-S3-DevKitM-1** conectado por USB
+- `lcov` para reportes de cobertura (`brew install lcov` / `sudo apt install lcov`)
 
-1. **Fork y clonar el repositorio**
-   ```bash
-   git clone https://github.com/<tu-usuario>/iot-mqtt-tls.git
-   cd iot-mqtt-tls
-   ```
+## Quick Start
 
-2. **Habilitar GitHub Actions** (si usarás OTA)
-   - Ve a tu fork en GitHub → tab **Actions**
-   - Haz clic en **"I understand my workflows…"** → **Enable**
-   - Configura los Secrets (ver [SECRETS_SETUP.md](SECRETS_SETUP.md))
+### 1. Clonar y configurar
 
-3. **Crear archivo `.env`** en la raíz del proyecto:
-   ```ini
-   COUNTRY=colombia
-   STATE=valle
-   CITY=tulua
-   MQTT_SERVER=mqtt.tu-dominio.com
-   MQTT_PORT=8883
-   MQTT_USER=miuser
-   MQTT_PASSWORD=supersecreto
-   WIFI_SSID=MiWiFiInicial
-   WIFI_PASSWORD=MiPassInicial
-   ```
-   > **Nota**: `ROOT_CA` usa el valor por defecto del código. Si necesitas cambiarlo, edita `src/secrets.cpp`. `WIFI_SSID/PASSWORD` son opcionales (se puede configurar luego por el portal AP).
+```bash
+git clone https://github.com/alvaro-salazar/iot-mqtt-tls.git
+cd iot-mqtt-tls
+```
 
-4. **Compilar y subir al ESP32**
-   
-   **Opción simple (recomendada):**
-   ```bash
-   python scripts/build_with_env.py upload
-   ```
-   
-   **Opción manual:**
-   ```bash
-   set -a && source .env && set +a
-   pio run -t upload
-   ```
+Crea el archivo `.env` en la raíz del proyecto:
 
-5. **Configurar Wi‑Fi** (primera vez o para cambiar)
-   - El dispositivo crea un AP: busca `ESP32-Setup-XXXXXX` y conéctate
-   - Abre el navegador en `http://192.168.4.1`
-   - Ingresa SSID y contraseña → **Guardar**
-   - El dispositivo se reinicia y se conecta automáticamente
-   - Las credenciales se guardan en NVS (persisten tras OTA)
+```ini
+COUNTRY=colombia
+STATE=valle
+CITY=tulua
+MQTT_SERVER=mqtt.tu-dominio.com
+MQTT_PORT=8883
+MQTT_USER=miuser
+MQTT_PASSWORD=supersecreto
+WIFI_SSID=MiWiFiInicial
+WIFI_PASSWORD=MiPassInicial
+```
 
-   **Para reconfigurar**: mantén presionado el botón **BOOT (GPIO0)** durante 3+ segundos al encender.
+### 2. Compilar y subir al ESP32
 
-✅ **Listo**: el dispositivo se conecta a Wi‑Fi y MQTT. Las credenciales persisten tras actualizaciones OTA.
+```bash
+# Opción recomendada
+python scripts/build_with_env.py upload
 
-## 📦 Actualización OTA (opcional)
+# Opción manual
+set -a && source .env && set +a
+pio run -t upload
+```
 
-Para enviar actualizaciones OTA a los dispositivos:
+### 3. Configurar Wi‑Fi (primera vez)
 
-1. **Commit y push** de tus cambios:
-   ```bash
-   git add .
-   git commit -m "feat: mejora X"
-   git push origin main
-   ```
+El dispositivo crea un AP `ESP32-Setup-XXXXXX`. Conéctate y abre `http://192.168.4.1`. Ingresa SSID y contraseña — las credenciales se guardan en NVS y persisten tras OTA.
 
-2. **Crear tag de versión** (formato `vX.Y.Z`):
-   ```bash
-   git tag v1.2.0
-   git push origin v1.2.0
-   ```
+Para reconfigurar: mantén presionado **BOOT (GPIO0)** durante 3+ segundos al encender.
 
-3. GitHub Actions automáticamente:
-   - Compila el firmware
-   - Sube el binario a S3 con nombre `firmware_v1.2.0.bin`
-   - Publica mensaje MQTT al tópico OTA definido en `src/libota.h` (por defecto: `dispositivo/device1/ota`)
+---
 
-Los dispositivos suscritos recibirán la actualización automáticamente.
+## Testing
 
-## 🔧 Troubleshooting
+El proyecto incluye una pirámide de testing completa con 57 tests automatizados.
+
+### Correr los tests
+
+```bash
+# Unit tests — lógica pura, sin hardware (~2 s)
+./run_tests.sh unit
+
+# Integration tests — ESP32-S3 conectado (~35 s)
+./run_tests.sh hardware
+
+# Pipeline completo
+./run_tests.sh all
+
+# Cobertura de código (genera coverage_html/index.html)
+./run_tests.sh coverage
+```
+
+### Suites
+
+| Suite | Entorno | Tests | Qué verifica |
+|---|---|---|---|
+| `test_unit` | native (sin hardware) | 38 | JSON payload, alertas, SSID, MAC, timing, overflow de millis |
+| `test_hardware` | ESP32-S3-DevKitM-1 | 19 | NVS, heap libre para TLS, CPU freq, WiFi radio |
+
+### Cobertura
+
+```bash
+pio test -e native-coverage
+bash scripts/coverage.sh
+# Abre coverage_html/index.html en el navegador
+```
+
+Resultado actual: **100 % líneas, 100 % funciones**.
+
+---
+
+## CI/CD Pipeline
+
+Un solo workflow (`.github/workflows/ci.yml`) con tres jobs en secuencia:
+
+```
+Unit Tests & Coverage → Hardware Integration Tests → Build Firmware & OTA Deploy
+         (siempre)          (solo PRs a main)           (solo main y tags)
+```
+
+| Evento | Unit Tests | Hardware Tests | OTA Deploy |
+|---|---|---|---|
+| Push a `feature/**` | via PR trigger | — | — |
+| PR a `main` | ✓ | ✓ best-effort | — |
+| Push a `main` | ✓ | — | ✓ si tests pasan |
+| Tag `v*.*.*` | ✓ | — | ✓ si tests pasan |
+
+**El OTA deploy nunca se ejecuta sin que los unit tests hayan pasado.**
+
+Los hardware tests usan `continue-on-error: true` + `timeout-minutes: 10` — si el runner no está disponible, el pipeline continúa sin bloquearse.
+
+### Configurar GitHub Secrets
+
+Para que el OTA deploy funcione, configura estos secrets en tu repo → Settings → Secrets:
+
+| Secret | Descripción |
+|---|---|
+| `MQTT_SERVER` | Host del broker MQTT |
+| `MQTT_PORT` | Puerto (normalmente 8883) |
+| `MQTT_USER` / `MQTT_PASSWORD` | Credenciales MQTT |
+| `WIFI_SSID` / `WIFI_PASSWORD` | Red WiFi de producción |
+| `COUNTRY` / `STATE` / `CITY` | Metadatos del certificado TLS |
+| `S3_BUCKET_NAME` | Bucket S3 para el firmware |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | Credenciales AWS |
+
+### Runner self-hosted (hardware tests en CI)
+
+```bash
+# Instalar PlatformIO en venv (requerido en Raspberry Pi OS 12+ / Ubuntu 24.04+)
+python3 -m venv ~/.platformio/penv
+~/.platformio/penv/bin/pip install platformio
+
+# Dar permisos al runner para el puerto serie
+sudo usermod -aG dialout $USER
+
+# Registrar el runner en GitHub → Settings → Actions → Runners
+# Luego:
+./run.sh
+```
+
+El runner debe tener el label `ARM64` (o el que hayas configurado en `ci.yml`).
+
+---
+
+## OTA Deploy
+
+Para enviar una actualización a los dispositivos en campo:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+GitHub Actions compilará el firmware, lo subirá a S3 como `firmware_v1.2.0.bin` y publicará el mensaje MQTT al tópico OTA (`dispositivo/device1/ota`). Los dispositivos suscritos actualizarán automáticamente.
+
+---
+
+## Estructura del proyecto
+
+```
+├── src/
+│   ├── main.cpp          # Punto de entrada
+│   ├── libiot.*          # Cliente MQTT con TLS
+│   ├── libwifi.*         # Gestión Wi‑Fi
+│   ├── libota.*          # Actualizaciones OTA
+│   ├── libprovision.*    # Portal de configuración AP
+│   ├── libstorage.*      # Persistencia en NVS
+│   └── secrets.cpp       # Credenciales (build_flags desde .env)
+├── test/
+│   ├── test_unit/        # Unit tests — entorno native
+│   └── test_hardware/    # Integration tests — ESP32-S3
+├── scripts/
+│   ├── build_with_env.py # Build con variables de entorno
+│   ├── add_env_defines.py# Inyección de ROOT_CA multilínea
+│   └── coverage.sh       # Generador de reporte lcov
+├── .github/workflows/
+│   └── ci.yml            # Pipeline CI/CD unificado
+├── platformio.ini        # 4 entornos: esp32dev, native, native-coverage, esp32-s3-devkitm-1-test
+├── run_tests.sh          # Pipeline de testing local
+└── .env                  # Variables de entorno (no commitear)
+```
+
+## Troubleshooting
 
 | Problema | Solución |
-|----------|----------|
+|---|---|
 | Portal no abre | Escribe manualmente `http://192.168.4.1` y desactiva datos móviles |
-| No aparece el AP | Apaga/enciende el dispositivo o mantén BOOT 3+ s al encender |
-| Error ROOT_CA | Asegúrate de que está en una sola línea con `\n` entre líneas |
-| OTA no llega | Revisa que los Secrets de GitHub estén configurados y que el dispositivo esté suscrito al tópico OTA |
+| No aparece el AP | Apaga/enciende o mantén BOOT 3+ s al encender |
+| `pio run` falla con `MQTT_PORT` vacío | Carga el `.env` antes: `set -a && source .env && set +a` |
+| OTA no llega | Verifica los Secrets de GitHub y que el dispositivo esté suscrito al tópico OTA |
+| Runner offline | El pipeline continúa — hardware tests tienen `continue-on-error: true` |
 
-## 📚 Documentación
+## Documentación adicional
 
-### Configuración básica
-- **[SECRETS_SETUP.md](SECRETS_SETUP.md)** - Configurar `.env` y GitHub Secrets
-- **[WIFI_SETUP.md](WIFI_SETUP.md)** - Guía detallada del portal de configuración Wi‑Fi
-- **[WINDOWS_SETUP.md](WINDOWS_SETUP.md)** - Instrucciones específicas para Windows
+- [SECRETS_SETUP.md](SECRETS_SETUP.md) — Configurar `.env` y GitHub Secrets
+- [WIFI_SETUP.md](WIFI_SETUP.md) — Portal de configuración Wi‑Fi
+- [OTA_SETUP.md](OTA_SETUP.md) — Guía completa de actualizaciones OTA
+- [WINDOWS_SETUP.md](WINDOWS_SETUP.md) — Instrucciones para Windows
 
-### Funcionalidades avanzadas
-- **[OTA_SETUP.md](OTA_SETUP.md)** - Guía completa de actualizaciones OTA
+## Licencia
 
-### Infraestructura
-- **Configuración EMQX ACL** - Consulta la Wiki del repositorio para la configuración completa de Access Control List en EMQX. La documentación extensa de ACL (múltiples métodos y ejemplos) está disponible en la Wiki de GitHub para facilitar su actualización.
-
-## 🏗️ Estructura del proyecto
-
-```
-├── src/              # Código fuente
-│   ├── main.cpp      # Punto de entrada
-│   ├── libiot.*      # Cliente MQTT con TLS
-│   ├── libwifi.*     # Gestión Wi‑Fi
-│   ├── libota.*      # Actualizaciones OTA
-│   ├── libprovision.* # Portal de configuración AP
-│   └── libstorage.*  # Persistencia en NVS
-├── scripts/          # Scripts de build
-├── .github/workflows/ # GitHub Actions
-└── platformio.ini    # Configuración PlatformIO
-```
-
-## 📝 Licencia
-
-Este proyecto está bajo la licencia MIT. Ver [LICENSE](LICENSE) para más detalles.
+MIT — ver [LICENSE](LICENSE).

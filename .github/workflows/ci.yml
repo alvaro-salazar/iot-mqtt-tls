@@ -1,0 +1,160 @@
+name: IoT Firmware CI + OTA
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+
+  # ─── Job 1: Unit tests + cobertura ───────────────────────────────────────
+  # Quality gate obligatorio. Bloquea todo lo demás si falla.
+  unit-tests:
+    name: Unit Tests & Coverage (native)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4.2.3
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m venv ~/.platformio/penv
+          ~/.platformio/penv/bin/pip install platformio
+          echo "$HOME/.platformio/penv/bin" >> $GITHUB_PATH
+
+      - name: Run unit tests
+        run: pio test -e native
+
+      - name: Generate coverage report
+        run: |
+          sudo apt-get install -y lcov --quiet
+          pio test -e native-coverage
+          bash scripts/coverage.sh
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: coverage-report
+          path: coverage_html/
+
+  # ─── Job 2: Hardware integration tests ───────────────────────────────────
+  # No bloquea el OTA si el runner no está disponible (continue-on-error).
+  # Solo corre en PRs a main para no retrasar cada push de feature.
+  hardware-tests:
+    name: Hardware Integration Tests (ESP32-S3)
+    runs-on: [self-hosted, ARM64]
+    needs: unit-tests
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    continue-on-error: true  # runner offline o tests fallidos no bloquean el merge
+    timeout-minutes: 10      # si el runner no aparece en 10 min, falla limpiamente
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Run hardware tests
+        run: |
+          export PATH="$HOME/.platformio/penv/bin:$PATH"
+          pio test -e esp32-s3-devkitm-1-test
+
+  # ─── Job 3: Build + OTA deploy ───────────────────────────────────────────
+  # Solo corre en main o tags. Requiere que unit-tests haya pasado.
+  # No espera hardware-tests (runner puede no estar disponible).
+  build-and-publish:
+    name: Build Firmware & OTA Deploy
+    runs-on: ubuntu-latest
+    needs: [unit-tests, hardware-tests]
+    if: |
+      needs.unit-tests.result == 'success' &&
+      (needs.hardware-tests.result == 'success' || needs.hardware-tests.result == 'failure' || needs.hardware-tests.result == 'skipped') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m venv ~/.platformio/penv
+          ~/.platformio/penv/bin/pip install platformio
+          echo "$HOME/.platformio/penv/bin" >> $GITHUB_PATH
+
+      - name: Set firmware version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "FIRMWARE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+            DATE=$(date -u +"%Y-%m-%d_%H-%M")
+            echo "FIRMWARE_VERSION=dev-${DATE}" >> $GITHUB_ENV
+          fi
+
+      - name: Set firmware filename
+        run: echo "FIRMWARE_NAME=firmware_${FIRMWARE_VERSION}.bin" >> $GITHUB_ENV
+
+      - name: Build firmware
+        run: platformio run
+        env:
+          COUNTRY: ${{ secrets.COUNTRY }}
+          STATE: ${{ secrets.STATE }}
+          CITY: ${{ secrets.CITY }}
+          MQTT_SERVER: ${{ secrets.MQTT_SERVER }}
+          MQTT_PORT: ${{ secrets.MQTT_PORT }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+          WIFI_SSID: ${{ secrets.WIFI_SSID }}
+          WIFI_PASSWORD: ${{ secrets.WIFI_PASSWORD }}
+
+      - name: Upload to S3
+        run: |
+          aws s3 cp .pio/build/esp32dev/firmware.bin s3://${{ secrets.S3_BUCKET_NAME }}/$FIRMWARE_NAME \
+            --content-type application/octet-stream
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Publish MQTT OTA message
+        run: |
+          pip install paho-mqtt
+          python3 -c "import os, json, paho.mqtt.publish as publish; \
+          url = 'https://{bucket}.s3.{region}.amazonaws.com/{firmware}'.format( \
+            bucket=os.getenv('S3_BUCKET_NAME'), \
+            region=os.getenv('AWS_REGION'), \
+            firmware=os.getenv('FIRMWARE_NAME') \
+          ); \
+          payload = json.dumps({ 'version': os.getenv('FIRMWARE_VERSION'), 'url': url }); \
+          publish.single( \
+            topic=os.getenv('DEVICE_TOPIC'), \
+            payload=payload, \
+            hostname=os.getenv('MQTT_SERVER'), \
+            port=int(os.getenv('MQTT_PORT')), \
+            auth={ 'username': os.getenv('MQTT_USER'), 'password': os.getenv('MQTT_PASSWORD') } if os.getenv('MQTT_USER') else None, \
+            tls={} if os.getenv('MQTT_TLS', 'false') == 'true' else None \
+          ); \
+          print('OTA message sent')"
+        env:
+          DEVICE_TOPIC: dispositivo/device1/ota
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          MQTT_SERVER: ${{ secrets.MQTT_SERVER }}
+          MQTT_PORT: ${{ secrets.MQTT_PORT }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+          MQTT_TLS: ${{ secrets.MQTT_TLS }}
